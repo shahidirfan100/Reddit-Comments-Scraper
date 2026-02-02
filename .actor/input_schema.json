@@ -1,0 +1,35 @@
+{
+  "title": "Reddit Comments Scraper",
+  "description": "Scrape comments from a Reddit post. Provide the URL of the Reddit post to scrape all comments.",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "startUrl": {
+      "title": "Reddit Post URL",
+      "type": "string",
+      "description": "The URL of the Reddit post to scrape comments from.",
+      "editor": "textfield",
+      "prefill": "https://www.reddit.com/r/webscraping/comments/1qs66k0/couldnt_find_proxy_directory_with_filters_so/"
+    },
+    "results_wanted": {
+      "title": "Maximum number of comments",
+      "type": "integer",
+      "description": "The maximum number of comments to collect. Leave empty to collect all comments.",
+      "minimum": 1,
+      "default": 20,
+      "editor": "number"
+    },
+    "proxyConfiguration": {
+      "title": "Proxy configuration",
+      "type": "object",
+      "description": "Use Apify Proxy for reliable scraping.",
+      "editor": "proxy",
+      "default": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": ["RESIDENTIAL"]
+      }
+    }
+  },
+  "required": ["startUrl"],
+  "additionalProperties": false
+}

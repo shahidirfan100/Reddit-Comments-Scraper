@@ -1,0 +1,53 @@
+{
+  "actorSpecification": 1,
+  "fields": {},
+  "views": {
+    "overview": {
+      "title": "Overview",
+      "transformation": {
+        "fields": [
+          "id",
+          "author",
+          "body",
+          "score",
+          "created_utc",
+          "parent_id",
+          "permalink"
+        ]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "id": {
+            "label": "Comment ID",
+            "format": "text"
+          },
+          "author": {
+            "label": "Author",
+            "format": "text"
+          },
+          "body": {
+            "label": "Comment Body",
+            "format": "text"
+          },
+          "score": {
+            "label": "Score",
+            "format": "number"
+          },
+          "created_utc": {
+            "label": "Created UTC",
+            "format": "number"
+          },
+          "parent_id": {
+            "label": "Parent ID",
+            "format": "text"
+          },
+          "permalink": {
+            "label": "Permalink",
+            "format": "link"
+          }
+        }
+      }
+    }
+  }
+}
