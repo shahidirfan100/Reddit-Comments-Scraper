@@ -113,41 +113,161 @@ async function main() {
             throw new Error('Invalid Reddit JSON response');
         }
 
+        const postData = data[0].data.children[0];
+        const postId = postData.data.name; // e.g., "t3_1pqgcx9"
+        const subreddit = postData.data.subreddit;
+        
+        log.info(`Post ID: ${postId}, Subreddit: ${subreddit}`);
+
         const commentsListing = data[1]; // Comments are in the second element
         const comments = commentsListing.data.children;
 
-        const flattenedComments = [];
+        let totalExtracted = 0;
+        const batch = [];
+        const moreCommentIds = []; // Track "more" comment IDs for pagination
 
-        function extractComments(commentsArray, parentId = null) {
+        // Helper function to push batch when it reaches 20 items
+        async function pushBatch() {
+            if (batch.length > 0) {
+                await Dataset.pushData([...batch]);
+                saved += batch.length;
+                log.info(`Pushed batch of ${batch.length} comments (total saved: ${saved})`);
+                batch.length = 0; // Clear batch
+            }
+        }
+
+        // Extract comments recursively and collect "more" objects
+        async function extractComments(commentsArray, parentId = null) {
             for (const comment of commentsArray) {
-                if (comment.kind !== 't1') continue; // t1 is comment
+                if (saved >= RESULTS_WANTED) {
+                    return; // Stop if we've reached the limit
+                }
 
-                const data = comment.data;
-                const commentData = {
-                    id: data.id,
-                    author: data.author,
-                    body: data.body,
-                    score: data.score,
-                    created_utc: data.created_utc,
-                    parent_id: parentId,
-                    permalink: data.permalink,
-                };
+                if (comment.kind === 't1') { // t1 is comment
+                    const data = comment.data;
+                    const commentData = {
+                        id: data.id,
+                        author: data.author,
+                        body: data.body,
+                        score: data.score,
+                        created_utc: data.created_utc,
+                        parent_id: parentId,
+                        permalink: data.permalink,
+                    };
 
-                flattenedComments.push(commentData);
+                    batch.push(commentData);
+                    totalExtracted++;
 
-                if (data.replies && data.replies.data && data.replies.data.children) {
-                    extractComments(data.replies.data.children, data.id);
+                    // Push batch when it reaches 20
+                    if (batch.length >= 20) {
+                        await pushBatch();
+                    }
+
+                    // Process nested replies
+                    if (data.replies && data.replies.data && data.replies.data.children) {
+                        await extractComments(data.replies.data.children, data.id);
+                    }
+                } else if (comment.kind === 'more' && saved < RESULTS_WANTED) {
+                    // Collect "more" comment IDs for pagination
+                    const moreIds = comment.data.children || [];
+                    moreCommentIds.push(...moreIds);
                 }
             }
         }
 
-        extractComments(comments);
+        // Process initial comments
+        await extractComments(comments);
 
-        const toSave = flattenedComments.slice(0, RESULTS_WANTED);
-        await Dataset.pushData(toSave);
-        saved = toSave.length;
+        // Push any remaining comments in batch
+        await pushBatch();
 
-        log.info(`Extracted ${flattenedComments.length} comments, saved ${saved}`);
+        log.info(`Initial extraction: ${totalExtracted} comments from main thread`);
+
+        // Fetch additional comments if "more" IDs exist and we need more comments
+        if (moreCommentIds.length > 0 && saved < RESULTS_WANTED) {
+            log.info(`Found ${moreCommentIds.length} additional comment IDs to fetch`);
+            
+            // Reddit API limit: fetch up to 100 comment IDs per request
+            const batchSize = 100;
+            let fetchedFromMore = 0;
+            
+            for (let i = 0; i < moreCommentIds.length && saved < RESULTS_WANTED; i += batchSize) {
+                const idBatch = moreCommentIds.slice(i, i + batchSize);
+                const idsToFetch = idBatch.slice(0, Math.min(batchSize, RESULTS_WANTED - saved));
+                
+                if (idsToFetch.length === 0) break;
+                
+                log.info(`Fetching batch ${Math.floor(i / batchSize) + 1}: ${idsToFetch.length} comments...`);
+                
+                try {
+                    // Use Reddit's morechildren API
+                    const moreUrl = `https://www.reddit.com/api/morechildren.json?api_type=json&link_id=${postId}&children=${idsToFetch.join(',')}&limit_children=false`;
+                    
+                    let moreResponse;
+                    for (let attempt = 1; attempt <= 3; attempt++) {
+                        try {
+                            moreResponse = await gotScraping(moreUrl, {
+                                headers,
+                                proxyUrl: proxyConf ? await proxyConf.newUrl() : undefined,
+                                timeout: { request: 30000 },
+                                http2: false,
+                                retry: { limit: 0 },
+                            });
+                            break;
+                        } catch (error) {
+                            if (attempt === 3) throw error;
+                            await new Promise(resolve => setTimeout(resolve, 2000));
+                        }
+                    }
+
+                    const moreData = JSON.parse(moreResponse.body);
+                    
+                    if (moreData.json && moreData.json.data && moreData.json.data.things) {
+                        const things = moreData.json.data.things;
+                        
+                        for (const thing of things) {
+                            if (saved >= RESULTS_WANTED) break;
+                            
+                            if (thing.kind === 't1') {
+                                const data = thing.data;
+                                const commentData = {
+                                    id: data.id,
+                                    author: data.author,
+                                    body: data.body,
+                                    score: data.score,
+                                    created_utc: data.created_utc,
+                                    parent_id: data.parent_id,
+                                    permalink: data.permalink,
+                                };
+
+                                batch.push(commentData);
+                                totalExtracted++;
+                                fetchedFromMore++;
+
+                                // Push batch when it reaches 20
+                                if (batch.length >= 20) {
+                                    await pushBatch();
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Rate limiting: wait between batches
+                    if (i + batchSize < moreCommentIds.length && saved < RESULTS_WANTED) {
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                    }
+                } catch (error) {
+                    log.warning(`Failed to fetch more comments batch: ${error.message}`);
+                }
+            }
+            
+            // Push final batch
+            await pushBatch();
+            
+            log.info(`Fetched ${fetchedFromMore} additional comments from "more" API`);
+        }
+
+        log.info(`Total extracted: ${totalExtracted} comments, saved: ${saved}`);
     } catch (error) {
         log.error(`Error during scraping: ${error.message}`);
         log.error(error.stack);
